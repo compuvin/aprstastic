@@ -134,9 +134,13 @@ class Gateway(object):
 
         # Connect to APRS IS
         aprsis_passcode = self._config.get("aprsis_passcode")
+        aprsis_host = self._config.get("aprsis_host", "rotate.aprs.net")
+        aprsis_port = self._config.get("aprsis_port", 14580)
         self._aprs_client = APRSClient(
             self._gateway_call_sign,
             aprsis_passcode,
+            aprsis_host,
+            aprsis_port,
             "g/" + "/".join(self._filtered_call_signs),
         )
 

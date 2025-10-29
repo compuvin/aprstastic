@@ -19,10 +19,12 @@ class APRSClient(object):
     Maybe we will implement our own one day!
     """
 
-    def __init__(self, login: str, passcode: str, filters: None):
+    def __init__(self, login: str, passcode: str, host: str, port: int, filters: None):
         super().__init__()
         self._login = login
         self._passcode = passcode
+        self._host = host
+        self._port = port
         self._filters = filters
         self._aprs = None
         self._rx_queue: Queue = Queue()
@@ -96,7 +98,7 @@ class APRSClient(object):
 
     def _rx_thread_body(self) -> None:
         try:
-            self._aprs = aprslib.IS(self._login, passwd=self._passcode, port=14580)
+            self._aprs = aprslib.IS(self._login, passwd=self._passcode, host=self._host, port=self._port)
             assert self._aprs is not None
             if self._filters is not None:
                 self._aprs.set_filter(self._filters)

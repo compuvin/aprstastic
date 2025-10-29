@@ -12,6 +12,11 @@ call_sign: N0CALL
 aprsis_passcode: 12345 
 
 
+# APRS-IS Server Connection Settings
+#aprsis_host: rotate.aprs.net
+#aprsis_port: 14580
+
+
 # Maximum length of an APRS text message. 
 # If null, or commented out, default to 67 as per APRS specification
 # max_aprs_message_length: 128
