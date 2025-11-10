@@ -17,12 +17,15 @@ aprsis_passcode: 12345
 # max_aprs_message_length: 128
 
 
-# Only serial devices are supported right now. 
-# If 'device' is null (or commented out), an attempt will be made to 
-# detected it automatically.
+# Meshtastic interface options:
+#   type: serial (default) or tcp
+#   serial: specify 'device' or leave blank for auto-detect
+#   tcp: set 'host' (and optional 'port', default 4403)
 meshtastic_interface: 
    type: serial
 #  device: /dev/ttyACM0
+#  host: 192.168.1.50
+#  port: 4403
 
 
 # Beacon new registrations to APRS-IS to facilitate discovery
