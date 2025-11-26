@@ -14,6 +14,7 @@ import os
 import traceback
 import meshtastic.stream_interface
 import meshtastic.serial_interface
+import meshtastic.tcp_interface
 from datetime import datetime
 from meshtastic.util import findPorts
 
@@ -64,6 +65,7 @@ class Gateway(object):
     def __init__(self, config):
         self._config = config
         self._start_time = None
+        self._meshtastic_interface_config = config.get("meshtastic_interface") or {}
 
         self._gateway_id = None
         self._gateway_call_sign = None
@@ -91,9 +93,7 @@ class Gateway(object):
         self._start_time = time.time()
 
         # Connect to the Meshtastic device
-        device = self._config.get("meshtastic_interface", {}).get("device")
-
-        self._interface = self._get_interface(device)
+        self._interface = self._get_interface(self._meshtastic_interface_config)
         if self._interface is None:
             raise ValueError("No meshtastic device detected or specified.")
 
@@ -162,11 +162,11 @@ class Gateway(object):
             ############################
             reconnect = False
 
-            # Periodically check on the state of the device serial connection
+            # Periodically check on the state of the device connection
             if now > self._next_serial_check_time:
                 self._next_serial_check_time = now + SERIAL_WATCHDOG_INTERVAL
-                if self._interface.stream is None or not self._interface.stream.is_open:
-                    logger.warn("Serial connection is not open.")
+                if not self._is_interface_connected():
+                    logger.warn("Meshtastic connection is not open.")
                     reconnect = True
 
             # Check if the Meshtastic device has gone silent a while
@@ -187,7 +187,9 @@ class Gateway(object):
                 try:
                     if pubsub.pub.isSubscribed(on_recv, MQTT_TOPIC):
                         pubsub.pub.unsubscribe(on_recv, MQTT_TOPIC)
-                    self._interface = self._get_interface(device)
+                    self._interface = self._get_interface(
+                        self._meshtastic_interface_config
+                    )
                     if self._interface is not None:
                         pubsub.pub.subscribe(on_recv, MQTT_TOPIC)
                 except Exception as e:
@@ -248,24 +250,58 @@ class Gateway(object):
             time.sleep(0.001)
 
     def _get_interface(
-        self, device=None
+        self, interface_config=None
     ) -> meshtastic.stream_interface.StreamInterface:
-        if device is None:
-            ports = meshtastic.util.findPorts(True)
-            if len(ports) == 1:
-                device = ports[0]
-            else:
-                logger.error(
-                    "Please specify the correct serial port in 'aprstastic.yaml'. "
-                    f"Possible values include: {ports}"
-                )
-                return None
-        if device is not None:
+        config = interface_config or {}
+        interface_type = (config.get("type") or "serial").lower()
+
+        if interface_type == "serial":
+            device = config.get("device")
+            if device is None:
+                ports = findPorts(True)
+                if len(ports) == 1:
+                    device = ports[0]
+                else:
+                    logger.error(
+                        "Please specify the correct serial port in 'aprstastic.yaml'. "
+                        f"Possible values include: {ports}"
+                    )
+                    return None
             dev = meshtastic.serial_interface.SerialInterface(device)
-            logger.info(f"Connected to: {device}")
+            logger.info(f"Connected to serial device: {device}")
             return dev
-        else:
-            return None
+
+        if interface_type == "tcp":
+            host = config.get("host") or "localhost"
+            port = config.get("port") or meshtastic.tcp_interface.DEFAULT_TCP_PORT
+            dev = meshtastic.tcp_interface.TCPInterface(
+                hostname=host, portNumber=int(port)
+            )
+            logger.info(f"Connected to TCP host: {host}:{port}")
+            return dev
+
+        logger.error(
+            f"Unsupported meshtastic_interface type '{interface_type}'. "
+            "Valid values are 'serial' and 'tcp'."
+        )
+        return None
+
+    def _is_interface_connected(self):
+        if self._interface is None:
+            return False
+
+        stream = getattr(self._interface, "stream", None)
+        if stream is not None and hasattr(stream, "is_open"):
+            try:
+                return stream.is_open
+            except Exception:
+                return False
+
+        socket_obj = getattr(self._interface, "socket", None)
+        if socket_obj is not None:
+            return True
+
+        return True
 
     def _process_meshtastic_packet(self, packet):
         self._last_meshtastic_packet_time = time.time()
