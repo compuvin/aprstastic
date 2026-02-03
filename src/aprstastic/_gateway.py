@@ -17,6 +17,7 @@ import meshtastic.serial_interface
 import meshtastic.tcp_interface
 from datetime import datetime
 from meshtastic.util import findPorts
+import math
 
 from queue import Queue, Empty
 from .__about__ import __version__
@@ -40,6 +41,9 @@ SERIAL_WATCHDOG_INTERVAL = 60  # Check the serial state every minute
 MESHTASTIC_WATCHDOG_INTERVAL = (
     60 * 15
 )  # After how long should we become worried the Meshtastic device is quiet?
+
+# APRS station cache settings
+DEFAULT_APRS_STATION_MAX_AGE_HOURS = 6
 
 # Beacons that mean unregister
 APRS_TOMBSTONE = "N0NE-01"
@@ -87,6 +91,8 @@ class Gateway(object):
         self._last_meshtastic_packet_time = 0
 
         self._registry = CallSignRegistry(config.get("data_dir"))
+        self._aprs_station_positions = {}
+        self._mesh_positions = {}
 
     def run(self):
         # For measuring uptime
@@ -141,7 +147,7 @@ class Gateway(object):
             aprsis_passcode,
             aprsis_host,
             aprsis_port,
-            "g/" + "/".join(self._filtered_call_signs),
+            self._build_aprsis_filter(),
         )
 
         logger.debug("Pausing for 2 seconds...")
@@ -318,6 +324,16 @@ class Gateway(object):
         should_announce = self._spotted(fromId)
 
         if portnum == "POSITION_APP":
+            position = packet.get("decoded", {}).get("position") or {}
+            lat = position.get("latitude")
+            lon = position.get("longitude")
+            if lat is not None and lon is not None:
+                self._mesh_positions[fromId] = {
+                    "latitude": lat,
+                    "longitude": lon,
+                    "time": position.get("time"),
+                }
+
             if fromId not in self._registry:
                 return
 
@@ -325,11 +341,12 @@ class Gateway(object):
             if self._registry[fromId]["icon"] == "$$":
                 logger.info(f"{fromId} has disabled position reporting")
             else:
-                position = packet.get("decoded", {}).get("position")
+                if lat is None or lon is None:
+                    return
                 self._send_aprs_position(
                     self._registry[fromId]["call_sign"],
-                    position.get("latitude"),
-                    position.get("longitude"),
+                    lat,
+                    lon,
                     position.get("time"),
                     self._registry[fromId]["icon"],
                     "aprstastic: " + fromId,
@@ -371,6 +388,10 @@ class Gateway(object):
                     fromId,
                     f"Gateway call sign: {self._gateway_call_sign}, Uptime: {self._uptime()}, Version: {__version__}",
                 )
+                return
+
+            if message_string.lower().strip() == "!stations":
+                self._handle_stations_request(fromId)
                 return
 
             if message_string.lower().strip().startswith("!register"):
@@ -447,7 +468,7 @@ class Gateway(object):
                 if call_sign in self._filtered_call_signs:
                     self._filtered_call_signs.remove(call_sign)
 
-                self._aprs_client.set_filter("g/" + "/".join(self._filtered_call_signs))
+                self._update_aprsis_filter()
                 self._send_mesh_message(fromId, "Device unregistered.")
                 return
 
@@ -489,6 +510,8 @@ class Gateway(object):
             )
 
     def _process_aprs_packet(self, packet):
+        self._record_aprs_station(packet)
+
         if packet.get("format") == "message":
             fromcall = packet.get("from", "N0CALL").strip().upper()
             tocall = packet.get("addresse", "").strip().upper()
@@ -699,8 +722,155 @@ class Gateway(object):
 
         # Ok it's new, update the filters
         self._filtered_call_signs.append(call_sign)
-        self._aprs_client.set_filter("g/" + "/".join(self._filtered_call_signs))
+        self._update_aprsis_filter()
         return True
+
+    def _build_aprsis_filter(self):
+        parts = []
+        if len(self._filtered_call_signs) > 0:
+            parts.append("g/" + "/".join(self._filtered_call_signs))
+
+        lat, lon = self._get_aprsis_filter_location()
+        if lat is not None and lon is not None:
+            distance_km = self._config.get("aprsis_filter_distance_km", 80)
+            try:
+                distance_km = float(distance_km)
+                parts.append(f"r/{lat}/{lon}/{distance_km}")
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid 'aprsis_filter_distance_km' value. Range filter disabled."
+                )
+
+        if len(parts) == 0:
+            return None
+
+        return " ".join(parts)
+
+    def _get_aprsis_filter_location(self):
+        lat = self._config.get("aprsis_filter_latitude")
+        lon = self._config.get("aprsis_filter_longitude")
+        if lat is None or lon is None:
+            beacon = self._config.get("gateway_beacon", {}) or {}
+            lat = beacon.get("latitude")
+            lon = beacon.get("longitude")
+
+        if lat is None or lon is None:
+            return (None, None)
+
+        try:
+            return (float(lat), float(lon))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid APRS-IS filter location values. Range filter disabled."
+            )
+            return (None, None)
+
+    def _update_aprsis_filter(self):
+        self._aprs_client.set_filter(self._build_aprsis_filter())
+
+    def _record_aprs_station(self, packet):
+        lat = packet.get("latitude")
+        lon = packet.get("longitude")
+        fromcall = packet.get("from")
+        if lat is None or lon is None or fromcall is None:
+            return
+
+        try:
+            lat = float(lat)
+            lon = float(lon)
+        except (TypeError, ValueError):
+            return
+
+        self._aprs_station_positions[fromcall.strip().upper()] = {
+            "latitude": lat,
+            "longitude": lon,
+            "time": time.time(),
+        }
+        self._prune_aprs_station_cache()
+
+    def _prune_aprs_station_cache(self):
+        max_age_hours = self._config.get(
+            "aprsis_station_max_age_hours", DEFAULT_APRS_STATION_MAX_AGE_HOURS
+        )
+        try:
+            max_age_hours = float(max_age_hours)
+        except (TypeError, ValueError):
+            max_age_hours = DEFAULT_APRS_STATION_MAX_AGE_HOURS
+        if max_age_hours <= 0:
+            return
+
+        cutoff = time.time() - (max_age_hours * 60 * 60)
+        stale_calls = [
+            call
+            for call, info in self._aprs_station_positions.items()
+            if info.get("time", 0) < cutoff
+        ]
+        for call in stale_calls:
+            del self._aprs_station_positions[call]
+
+    def _haversine_km(self, lat1, lon1, lat2, lon2):
+        r = 6371.0
+        phi1 = math.radians(lat1)
+        phi2 = math.radians(lat2)
+        dphi = math.radians(lat2 - lat1)
+        dlambda = math.radians(lon2 - lon1)
+        a = (
+            math.sin(dphi / 2) ** 2
+            + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+        )
+        return 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    def _handle_stations_request(self, fromId):
+        if fromId not in self._registry:
+            self._send_mesh_message(
+                fromId,
+                "Unknown device. HAM license required!\nRegister by replying with:\n!register [CALLSIGN]-[SSID]\nE.g.,\n!register N0CALL-1",
+            )
+            return
+
+        self._prune_aprs_station_cache()
+
+        position = self._mesh_positions.get(fromId)
+        if position is None:
+            self._send_mesh_message(
+                fromId,
+                "No position available for your node yet. Share a position and try again.",
+            )
+            return
+
+        lat = position.get("latitude")
+        lon = position.get("longitude")
+        if lat is None or lon is None:
+            self._send_mesh_message(
+                fromId,
+                "No valid position available for your node yet. Share a position and try again.",
+            )
+            return
+
+        if len(self._aprs_station_positions) == 0:
+            self._send_mesh_message(
+                fromId,
+                "No APRS station positions received yet. Try again shortly.",
+            )
+            return
+
+        stations = []
+        for call, info in self._aprs_station_positions.items():
+            if "time" not in info:
+                continue
+            dist_km = self._haversine_km(
+                lat, lon, info["latitude"], info["longitude"]
+            )
+            stations.append((dist_km, call))
+
+        stations.sort(key=lambda x: x[0])
+        stations = stations[:10]
+
+        lines = ["Closest APRS stations:"]
+        for dist_km, call in stations:
+            lines.append(f"{call} {dist_km:.1f} km")
+
+        self._send_mesh_message(fromId, "\n".join(lines))
 
     def _uptime(self):
         if self._start_time is None:
