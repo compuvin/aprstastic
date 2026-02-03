@@ -29,6 +29,10 @@ aprsis_filter_distance_km: 80
 aprsis_station_max_age_hours: 6
 
 
+# APRS station distance units for !stations (km or mi)
+aprsis_station_distance_units: km
+
+
 # Maximum length of an APRS text message. 
 # If null, or commented out, default to 67 as per APRS specification
 # max_aprs_message_length: 128

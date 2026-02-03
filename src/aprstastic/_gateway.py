@@ -854,6 +854,11 @@ class Gateway(object):
             )
             return
 
+        units = (self._config.get("aprsis_station_distance_units") or "km").strip().lower()
+        if units not in ("km", "mi"):
+            units = "km"
+        unit_label = units
+
         stations = []
         for call, info in self._aprs_station_positions.items():
             if "time" not in info:
@@ -861,14 +866,18 @@ class Gateway(object):
             dist_km = self._haversine_km(
                 lat, lon, info["latitude"], info["longitude"]
             )
-            stations.append((dist_km, call))
+            if units == "mi":
+                dist = dist_km * 0.621371
+            else:
+                dist = dist_km
+            stations.append((dist, call))
 
         stations.sort(key=lambda x: x[0])
         stations = stations[:10]
 
         lines = ["Closest APRS stations:"]
-        for dist_km, call in stations:
-            lines.append(f"{call} {dist_km:.1f} km")
+        for dist, call in stations:
+            lines.append(f"{call} {dist:.1f} {unit_label}")
 
         self._send_mesh_message(fromId, "\n".join(lines))
 
