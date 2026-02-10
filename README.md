@@ -67,6 +67,14 @@ Use the following command to print the gateway's info and version.
 !version
 ```
 
+**Find nearby APRS stations:**
+
+Use the following command to list the 10 closest APRS stations based on your node's current position.
+
+```
+!stations
+```
+
 ## Installation, Configuration, and Running
 
 ```console

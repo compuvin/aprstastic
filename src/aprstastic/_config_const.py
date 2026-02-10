@@ -17,6 +17,22 @@ aprsis_passcode: 12345
 #aprsis_port: 14580
 
 
+# APRS-IS Range Filter (optional)
+# Specify a fixed location (latitude/longitude) and range to receive nearby station positions.
+# If latitude/longitude are omitted, the gateway beacon location will be used if provided.
+#aprsis_filter_latitude: 47.6205063
+#aprsis_filter_longitude: -122.3518523
+aprsis_filter_distance_km: 80
+
+
+# APRS station cache (hours)
+aprsis_station_max_age_hours: 6
+
+
+# APRS station distance units for !stations (km or mi)
+aprsis_station_distance_units: km
+
+
 # Maximum length of an APRS text message. 
 # If null, or commented out, default to 67 as per APRS specification
 # max_aprs_message_length: 128
