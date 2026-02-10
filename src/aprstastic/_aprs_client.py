@@ -97,18 +97,43 @@ class APRSClient(object):
                 raise
 
     def _rx_thread_body(self) -> None:
-        try:
-            self._aprs = aprslib.IS(self._login, passwd=self._passcode, host=self._host, port=self._port)
-            assert self._aprs is not None
-            if self._filters is not None:
-                self._aprs.set_filter(self._filters)
-            self._aprs.connect()
-            self._aprs.consumer(
-                lambda x: self._rx_queue.put(x, block=True), raw=True, blocking=True
+        retry_delay_seconds = 60
+        max_retry_delay_seconds = 16 * 60
+
+        while True:
+            try:
+                self._aprs = aprslib.IS(
+                    self._login,
+                    passwd=self._passcode,
+                    host=self._host,
+                    port=self._port,
+                )
+                assert self._aprs is not None
+                if self._filters is not None:
+                    self._aprs.set_filter(self._filters)
+                self._aprs.connect()
+                logger.info("Connected to APRS-IS.")
+
+                # Successful connection: reset backoff.
+                retry_delay_seconds = 60
+
+                # This blocks until disconnected or an exception occurs.
+                self._aprs.consumer(
+                    lambda x: self._rx_queue.put(x, block=True),
+                    raw=True,
+                    blocking=True,
+                )
+            except Exception:
+                logger.error(traceback.format_exc())
+            finally:
+                # Ensure TX thread knows we're not connected while we wait.
+                self._aprs = None
+
+            logger.warning(
+                f"APRS-IS connection lost. Reconnecting in {retry_delay_seconds} seconds."
             )
-        except:
-            logger.error(traceback.format_exc())
-            raise
+            time.sleep(retry_delay_seconds)
+            retry_delay_seconds = min(retry_delay_seconds * 2, max_retry_delay_seconds)
 
 
 class _UpdateFilters(object):
